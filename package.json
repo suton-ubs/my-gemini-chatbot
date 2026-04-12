@@ -1,0 +1,25 @@
+{
+  "name": "my-gemini-chatbot",
+  "version": "1.0.0",
+  "description": "My simple Chatbot server using Express and Google Gemini API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "type": "module",
+  "license": "ISC",
+  "dependencies": {
+    "@google/genai": "^1.49.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "multer": "^2.1.1"
+  },
+  "devDependencies": {
+    "clean-css": "^5.3.3",
+    "html-minifier-terser": "^7.2.0",
+    "javascript-obfuscator": "^5.4.1",
+    "terser": "^5.46.1"
+  }
+}
