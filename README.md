@@ -250,3 +250,6 @@ Key areas to read in order:
 5. Upload endpoint handler and cleanup
 6. Centralized error handling
 7. Graceful shutdown
+
+## License
+This project is licensed under the MIT License.
