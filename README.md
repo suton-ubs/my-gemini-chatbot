@@ -12,7 +12,7 @@ Public:
 - `GET /health`
 - `GET /chat-meta`
 
-Protected (when `ACCESS_CODE` is set):
+Protected (when `GEMINI_API_KEY` is set):
 - `POST /generate-text`
 - `POST /chat`
 - `POST /generate-from-image`
@@ -25,7 +25,7 @@ This implementation intentionally uses only these keys from `.env`:
 - `NODE_ENV`
 - `PORT`
 - `CORS_ORIGIN`
-- `GEMINI_API_KEY`
+- `GEMINI_API_KEY` (optional; when empty, the UI asks for it and sends it per request)
 - `GEMINI_DEFAULT_MODEL`
 - `GEMINI_ALLOWED_MODELS`
 - `GEMINI_TEMPERATURE`
@@ -68,12 +68,12 @@ npm run start
 ```
 
 ## Authentication
-When `ACCESS_CODE` exists in `.env`, protected endpoints require one of these headers:
+When `GEMINI_API_KEY` exists in `.env`, protected endpoints require one of these headers:
 
 - `x-access-code: <ACCESS_CODE>`
 - `access-code: <ACCESS_CODE>`
 
-If `ACCESS_CODE` is empty, auth middleware is effectively disabled.
+If `GEMINI_API_KEY` is empty, the app switches to bring-your-own-key mode: the UI prompts for a Gemini API key, and `ACCESS_CODE` is disabled.
 
 Open endpoints:
 - `GET /health`

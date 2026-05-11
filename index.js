@@ -17,11 +17,14 @@ const PERSONALITIES_FILE_PATH = path.join(ROOT_DIR, "personalities.json");
 const JSON_BODY_LIMIT = "10mb";
 const DEFAULT_MAX_UPLOAD_SIZE_MB = 25;
 const GEMINI_TIMEOUT_MS = 30_000;
+const GEMINI_API_KEY_STORAGE_KEY = "my-gemini-chatbot.geminiApiKey";
+const GEMINI_API_KEY_HEADER = "x-gemini-api-key";
+const PUBLIC_INDEX_HTML_PATH = path.join(ROOT_DIR, "public", "index.html");
 
 const CHAT_ROLES = new Set(["system", "user", "model"]);
 
 const env = buildEnv();
-const geminiClient = new GoogleGenAI({ apiKey: env.geminiApiKey });
+const geminiClientCache = new Map();
 let personalityCatalog = new Map();
 
 // Domain: Main entry and startup orchestration.
@@ -147,6 +150,155 @@ async function loadPersonalityCatalog() {
 // Defines Express app graph and graceful termination behavior.
 
 /**
+ * Injects a small bootstrap into the public app shell.
+ *
+ * @param {string} html - Base HTML shell.
+ * @returns {string} HTML with injected bootstrap.
+ */
+function injectGeminiKeyBootstrap(html) {
+  const config = {
+    geminiApiKeyConfigured: Boolean(env.geminiApiKey),
+    accessCodeEnabled: Boolean(env.geminiApiKey),
+    storageKey: GEMINI_API_KEY_STORAGE_KEY,
+    headerName: GEMINI_API_KEY_HEADER,
+  };
+
+  const bootstrap = `
+<script>
+(function () {
+  var config = ${JSON.stringify(config)};
+  var savedKey = "";
+
+  function getSavedKey() {
+    try {
+      return (localStorage.getItem(config.storageKey) || "").trim();
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function patchFetch() {
+    if (window.__geminiApiKeyFetchPatched) {
+      return;
+    }
+
+    var originalFetch = window.fetch.bind(window);
+    var protectedPath = /\/(chat|generate-text|generate-from-image|generate-from-document|generate-from-audio)$/;
+
+    window.fetch = function (input, init) {
+      var request = input instanceof Request ? input : null;
+      var url = request ? request.url : String(input);
+
+      if (!protectedPath.test(url)) {
+        return originalFetch(input, init);
+      }
+
+      var apiKey = getSavedKey();
+
+      if (!apiKey) {
+        return originalFetch(input, init);
+      }
+
+      var headers = new Headers(request ? request.headers : init && init.headers);
+      headers.set(config.headerName, apiKey);
+
+      var nextInit = Object.assign({}, init || {}, { headers: headers });
+
+      if (request) {
+        return originalFetch(new Request(request, nextInit));
+      }
+
+      return originalFetch(input, nextInit);
+    };
+
+    window.__geminiApiKeyFetchPatched = true;
+  }
+
+  function hideAccessCodeControl() {
+    var accessCodeInput = document.getElementById("accessCode");
+    var accessCodeGroup = accessCodeInput && accessCodeInput.closest(".top-control-group");
+
+    if (accessCodeGroup) {
+      accessCodeGroup.style.display = "none";
+    }
+  }
+
+  function showPrompt() {
+    var existingPrompt = document.getElementById("geminiKeyPrompt");
+    if (existingPrompt) {
+      return existingPrompt;
+    }
+
+    var prompt = document.createElement("section");
+    prompt.id = "geminiKeyPrompt";
+    prompt.style.cssText = "position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(18,18,18,.46);backdrop-filter:blur(2px);";
+    prompt.innerHTML = '<div style="width:min(540px,100%);border:1px solid #e3e3e0;border-radius:16px;background:#fff;box-shadow:0 18px 48px rgba(0,0,0,.22);padding:20px;font-family:Inter,system-ui,sans-serif;color:#2c2c2a;"><div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8f8f89;margin-bottom:8px;">Gemini API Key Required</div><h2 style="font-size:22px;line-height:1.2;margin:0 0 10px;">Provide your Gemini API key to continue.</h2><p style="margin:0 0 14px;font-size:14px;line-height:1.5;color:#5e5e5a;">This app can run without a server-side key. Save your key here and the UI will send it with each Gemini request. Access code is disabled in this mode.</p><label style="display:block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#8f8f89;margin-bottom:6px;" for="geminiApiKeyInput">Gemini API Key</label><input id="geminiApiKeyInput" type="password" autocomplete="off" placeholder="Paste your Gemini API key" style="width:100%;height:38px;border:1px solid #dcdcd9;border-radius:10px;padding:0 12px;font-size:14px;outline:none;" /><div style="display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap;"><button id="geminiApiKeySaveButton" type="button" style="border:0;border-radius:10px;background:#7c6cf0;color:#fff;padding:9px 14px;font-size:14px;cursor:pointer;">Save key</button><p id="geminiApiKeyStatus" style="margin:0;font-size:13px;line-height:1.4;color:#666;"></p></div></div>';
+    document.body.appendChild(prompt);
+
+    var input = document.getElementById("geminiApiKeyInput");
+    var button = document.getElementById("geminiApiKeySaveButton");
+    var status = document.getElementById("geminiApiKeyStatus");
+
+    savedKey = getSavedKey();
+    if (input) {
+      input.value = savedKey;
+    }
+
+    function updateStatus(message) {
+      if (status) {
+        status.textContent = message;
+      }
+    }
+
+    updateStatus(savedKey ? "Key saved locally. Reload the page to continue." : "Enter a Gemini API key to unlock the app.");
+
+    if (button && input) {
+      button.addEventListener("click", function () {
+        var nextValue = input.value.trim();
+
+        if (!nextValue) {
+          updateStatus("Gemini API key is required.");
+          return;
+        }
+
+        try {
+          localStorage.setItem(config.storageKey, nextValue);
+          savedKey = nextValue;
+          updateStatus("Key saved locally. Reload the page to continue.");
+        } catch (_error) {
+          updateStatus("Unable to save the key in this browser.");
+        }
+      });
+    }
+
+    return prompt;
+  }
+
+  function init() {
+    if (!config.geminiApiKeyConfigured) {
+      hideAccessCodeControl();
+      savedKey = getSavedKey();
+
+      if (!savedKey) {
+        showPrompt();
+      }
+    }
+
+    patchFetch();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+})();
+</script>`;
+
+  return html.replace("</body>", `${bootstrap}</body>`);
+}
+
+/**
  * Creates the Express app with middleware, routes, and centralized error mapping.
  *
  * @returns {import("express").Express} Configured Express application.
@@ -171,6 +323,15 @@ function createApp() {
   // Explicit body limits protect memory from unexpectedly large payloads.
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
   app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
+
+  app.get(["/", "/index.html"], async (req, res, next) => {
+    try {
+      const html = await fs.readFile(PUBLIC_INDEX_HTML_PATH, "utf8");
+      res.type("html").send(injectGeminiKeyBootstrap(html));
+    } catch (error) {
+      next(error);
+    }
+  });
 
   // Static public page is only for manual testing; API works independently.
   app.use(express.static(path.join(ROOT_DIR, "public")));
@@ -198,6 +359,8 @@ function createApp() {
       allowedModels: env.geminiAllowedModels,
       allowedUploadExtensions: getAllowedExtensionsForRoute("chat"),
       personalities,
+      geminiApiKeyConfigured: Boolean(env.geminiApiKey),
+      accessCodeEnabled: Boolean(env.geminiApiKey),
     });
   });
 
@@ -717,10 +880,11 @@ async function removeFileIfExists(filePath) {
  * Uploads a local multer file to Gemini Files API.
  *
  * @param {{path: string, mimetype?: string, originalname?: string}} file - Multer file object.
+ * @param {GoogleGenAI} geminiClient - Gemini client for this request.
  * @returns {Promise<{name: string, uri: string, mimeType: string}>} Uploaded Gemini file reference.
  * @throws {Error & {statusCode: number}} When response is missing required fields.
  */
-async function uploadFileToGemini(file) {
+async function uploadFileToGemini(file, geminiClient) {
   const uploadedFile = await geminiClient.files.upload({
     file: file.path,
     config: {
@@ -749,9 +913,10 @@ async function uploadFileToGemini(file) {
  *
  * @param {string | undefined | null} fileName - Gemini file resource name.
  * @param {string} requestId - Request id for error log context.
+ * @param {GoogleGenAI} geminiClient - Gemini client for this request.
  * @returns {Promise<void>}
  */
-async function safeDeleteGeminiFile(fileName, requestId) {
+async function safeDeleteGeminiFile(fileName, requestId, geminiClient) {
   if (!fileName) {
     return;
   }
@@ -900,12 +1065,20 @@ function buildCorsOptions() {
  * @returns {void}
  */
 function requireAccessCode(req, res, next) {
-  if (!env.accessCode) {
+  if (!env.geminiApiKey) {
     return next();
   }
 
   // Accept both header names so clients can integrate with less friction.
   const providedCode = req.header("x-access-code") || req.header("access-code");
+  if (!providedCode) {
+    return res.status(401).json(buildErrorResponse(req.requestId, "Unauthorized: access code is required."));
+  }
+
+  if (!env.accessCode) {
+    return next();
+  }
+
   if (providedCode !== env.accessCode) {
     return res.status(401).json(buildErrorResponse(req.requestId, "Unauthorized: invalid access code."));
   }
@@ -935,8 +1108,10 @@ async function generateText(req, res) {
   }
 
   let resolvedModel = null;
+  let geminiClient = null;
 
   try {
+    geminiClient = getGeminiClientForRequest(req);
     resolvedModel = resolveGeminiModel(modelInput);
 
     const rawResponse = await withTimeout(
@@ -1018,8 +1193,11 @@ async function chat(req, res) {
   let resolvedModel = null;
   let resolvedPersonality = null;
   let uploadedGeminiFile = null;
+  let geminiClient = null;
 
   try {
+    geminiClient = getGeminiClientForRequest(req);
+
     if (personalityIdInput) {
       resolvedPersonality = resolvePersonality(personalityIdInput);
     }
@@ -1032,7 +1210,7 @@ async function chat(req, res) {
 
     if (file) {
       uploadedGeminiFile = await withTimeout(
-        uploadFileToGemini(file),
+        uploadFileToGemini(file, geminiClient),
         GEMINI_TIMEOUT_MS,
         "Gemini chat upload request"
       );
@@ -1121,7 +1299,7 @@ async function chat(req, res) {
     return res.status(statusCode).json(buildErrorResponse(requestId, message));
   } finally {
     await removeFileIfExists(file?.path);
-    await safeDeleteGeminiFile(uploadedGeminiFile?.name, requestId);
+    await safeDeleteGeminiFile(uploadedGeminiFile?.name, requestId, geminiClient);
   }
 }
 
@@ -1155,14 +1333,16 @@ async function handleFileEndpoint(req, res, options) {
 
   let resolvedModel = null;
   let uploadedGeminiFile = null;
+  let geminiClient = null;
 
   try {
+    geminiClient = getGeminiClientForRequest(req);
     resolvedModel = resolveGeminiModel(modelInput);
 
     // Upload local temp file first, then pass Gemini a URI part instead of base64.
     const finalPrompt = prompt || defaultPrompt;
     uploadedGeminiFile = await withTimeout(
-      uploadFileToGemini(file),
+      uploadFileToGemini(file, geminiClient),
       GEMINI_TIMEOUT_MS,
       `Gemini ${endpointName} upload request`
     );
@@ -1241,7 +1421,7 @@ async function handleFileEndpoint(req, res, options) {
     // Always remove temporary uploads, even on upstream or network errors.
     await removeFileIfExists(file.path);
     // Also clean up uploaded Gemini files so one-off requests do not accumulate storage.
-    await safeDeleteGeminiFile(uploadedGeminiFile?.name, requestId);
+    await safeDeleteGeminiFile(uploadedGeminiFile?.name, requestId, geminiClient);
   }
 }
 
@@ -1334,6 +1514,49 @@ function parseNumber(value, fallback) {
  */
 function optionalString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Resolves a Gemini API key from runtime config or request headers.
+ *
+ * @param {import("express").Request} req - Incoming request.
+ * @returns {string} Gemini API key, or empty string when unavailable.
+ */
+function resolveGeminiApiKey(req) {
+  return env.geminiApiKey || optionalString(req.header(GEMINI_API_KEY_HEADER)) || optionalString(req.header("gemini-api-key"));
+}
+
+/**
+ * Returns a cached Gemini client for the provided API key.
+ *
+ * @param {string} apiKey - Gemini API key.
+ * @returns {GoogleGenAI} Gemini client.
+ */
+function getGeminiClient(apiKey) {
+  const normalizedApiKey = optionalString(apiKey);
+  assertCondition(Boolean(normalizedApiKey), "Gemini API key is required.");
+
+  if (!geminiClientCache.has(normalizedApiKey)) {
+    geminiClientCache.set(normalizedApiKey, new GoogleGenAI({ apiKey: normalizedApiKey }));
+  }
+
+  return geminiClientCache.get(normalizedApiKey);
+}
+
+/**
+ * Resolves the Gemini client for the current request.
+ *
+ * @param {import("express").Request} req - Incoming request.
+ * @returns {GoogleGenAI} Gemini client.
+ */
+function getGeminiClientForRequest(req) {
+  const apiKey = resolveGeminiApiKey(req);
+
+  if (!apiKey) {
+    throw createHttpError(400, "Gemini API key is required. Enter it in the UI and try again.");
+  }
+
+  return getGeminiClient(apiKey);
 }
 
 /**
@@ -1457,7 +1680,6 @@ function buildEnv() {
   };
 
   // Fail fast on invalid config so the app does not run in a broken state.
-  assertCondition(Boolean(env.geminiApiKey), "Missing GEMINI_API_KEY in .env.");
   assertCondition(Number.isInteger(env.port) && env.port > 0 && env.port <= 65535, "PORT must be a valid number between 1 and 65535.");
   assertCondition(env.geminiAllowedModels.length > 0, "GEMINI_ALLOWED_MODELS must contain at least one model.");
   assertCondition(env.geminiAllowedModels.includes(env.geminiDefaultModel), "GEMINI_DEFAULT_MODEL must exist in GEMINI_ALLOWED_MODELS.");
